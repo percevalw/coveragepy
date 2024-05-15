@@ -131,6 +131,8 @@ class Coverage(TConfigurable):
         check_preimported: bool = False,
         context: Optional[str] = None,
         messages: bool = False,
+        base_coverage_report: Optional[str] = None,
+        base_revision: Optional[str] = None,
     ) -> None:
         """
         Many of these arguments duplicate and override values that can be
@@ -290,6 +292,8 @@ class Coverage(TConfigurable):
             report_include=include,
             concurrency=concurrency,
             context=context,
+            base_coverage_report=base_coverage_report,
+            base_revision=base_revision,
         )
 
         # If we have sub-process measurement happening automatically, then we
@@ -919,7 +923,13 @@ class Coverage(TConfigurable):
         else:
             fr = self._get_file_reporter(it)
 
-        return Analysis(data, self.config.precision, fr, self._file_mapper)
+        return Analysis(
+            data=data,
+            precision=self.config.precision,
+            file_reporter=fr,
+            file_mapper=self._file_mapper,
+            base_revision=self.config.base_revision,
+        )
 
     def _get_file_reporter(self, morf: TMorf) -> FileReporter:
         """Get a FileReporter for a module or file name."""

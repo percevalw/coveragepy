@@ -5,14 +5,16 @@
 
 from __future__ import annotations
 
+import bisect
 import collections
 
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 from coverage.debug import AutoReprMixin
+from coverage.diff import unchanged_blocks
 from coverage.exceptions import ConfigError
 from coverage.misc import nice_pair
-from coverage.types import TArc, TLineNo
+from coverage.types import TArc, TLineNo, FilePath
 
 if TYPE_CHECKING:
     from coverage.data import CoverageData
@@ -28,6 +30,7 @@ class Analysis:
         precision: int,
         file_reporter: FileReporter,
         file_mapper: Callable[[str], str],
+        base_revision: Optional[str] = None,
     ) -> None:
         self.data = data
         self.file_reporter = file_reporter
@@ -41,6 +44,7 @@ class Analysis:
         executed = self.file_reporter.translate_lines(executed)
         self.executed = executed
         self.missing = self.statements - self.executed
+        n_missing_in_ranges = sum(e - b + 1 for b, e in _line_ranges(self.statements, self.missing))
 
         if self.data.has_arcs():
             self._arc_possibilities = sorted(self.file_reporter.arcs())
@@ -56,6 +60,14 @@ class Analysis:
             self.no_branch = set()
             n_branches = n_partial_branches = n_missing_branches = 0
 
+        self.base_revision = base_revision
+
+        n_missing_before = 0
+        if self.data._base_coverage_report:
+            n_missing_before = len(self.data._base_coverage_report.get(
+                self.file_reporter.relative_filename(), [])
+            )
+
         self.numbers = Numbers(
             precision=precision,
             n_files=1,
@@ -65,6 +77,8 @@ class Analysis:
             n_branches=n_branches,
             n_partial_branches=n_partial_branches,
             n_missing_branches=n_missing_branches,
+            n_missing_before=n_missing_before,
+            n_missing_in_ranges=n_missing_in_ranges,
         )
 
     def missing_formatted(self, branches: bool = False) -> str:
@@ -81,6 +95,55 @@ class Analysis:
             arcs = None
 
         return format_lines(self.statements, self.missing, arcs=arcs)
+
+    def missing_ranges(self) -> List[Dict]:
+        """The missing line numbers, formatted nicely, with a diff."""
+        filename = self.file_reporter.relative_filename()
+        line_ranges = _line_ranges(self.statements, self.missing)
+        missing = [{"start": s-1, "end": e} for s, e in line_ranges]
+
+        if self.base_revision is not None:
+
+            # Compute which lines in the branch file were changed
+            unchanged = unchanged_blocks(self.base_revision).get(filename)
+            if unchanged is not None:
+                unchanged_base_lines, unchanged_branch_lines, sizes = unchanged
+                unchanged_lines = {
+                    start + i
+                    for start, size in zip(unchanged_branch_lines, sizes)
+                    for i in range(size)
+                }
+
+                for m in missing:
+                    m["same_code"] = set(range(m["start"], m["end"])) <= unchanged_lines
+            else:
+                for m in missing:
+                    m["same_code"] = True
+
+            if self.data._base_coverage_report is not None:
+                # Compute which lines in the file were
+                # already missing in the base branch
+                base_missing_lines = self.data._base_coverage_report.get(filename, [])
+                was_already_missing = set()
+
+                if unchanged is None:
+                    was_already_missing = set(base_missing_lines)
+                else:
+                    for line in base_missing_lines:
+                        idx = bisect.bisect(unchanged_base_lines, line)
+                        if idx > 0:
+                            idx -= 1
+
+                        unchanged_base_start = unchanged_base_lines[idx]
+                        branch_line = unchanged_base_lines[idx] + (line - unchanged_base_start)
+                        # If the line that was missing in base is in an unchanged block
+                        if unchanged_base_start <= line < unchanged_base_start + sizes[idx]:
+                            was_already_missing.add(branch_line)
+
+                for m in missing:
+                    m["same_cov"] = set(range(m["start"], m["end"])) <= was_already_missing
+
+        return missing
 
     def has_arcs(self) -> bool:
         """Were arcs measured in this result?"""
@@ -196,6 +259,8 @@ class Numbers(AutoReprMixin):
         n_branches: int = 0,
         n_partial_branches: int = 0,
         n_missing_branches: int = 0,
+        n_missing_before: int = 0,
+        n_missing_in_ranges: int = 0,
     ) -> None:
         assert 0 <= precision < 10
         self._precision = precision
@@ -208,6 +273,8 @@ class Numbers(AutoReprMixin):
         self.n_branches = n_branches
         self.n_partial_branches = n_partial_branches
         self.n_missing_branches = n_missing_branches
+        self.n_missing_before = n_missing_before
+        self.n_missing_in_ranges = n_missing_in_ranges
 
     def init_args(self) -> List[int]:
         """Return a list for __init__(*args) to recreate this object."""
@@ -236,6 +303,11 @@ class Numbers(AutoReprMixin):
         else:
             pc_cov = 100.0
         return pc_cov
+
+    @property
+    def n_diff_missing(self) -> int:
+        """Returns a single percentage value for coverage."""
+        return self.n_missing_in_ranges - self.n_missing_before
 
     @property
     def pc_covered_str(self) -> str:
@@ -285,12 +357,10 @@ class Numbers(AutoReprMixin):
         nums.n_excluded = self.n_excluded + other.n_excluded
         nums.n_missing = self.n_missing + other.n_missing
         nums.n_branches = self.n_branches + other.n_branches
-        nums.n_partial_branches = (
-            self.n_partial_branches + other.n_partial_branches
-        )
-        nums.n_missing_branches = (
-            self.n_missing_branches + other.n_missing_branches
-        )
+        nums.n_missing_before = (self.n_missing_before or 0) + other.n_missing_before
+        nums.n_partial_branches = self.n_partial_branches + other.n_partial_branches
+        nums.n_missing_branches = self.n_missing_branches + other.n_missing_branches
+        nums.n_missing_in_ranges = self.n_missing_in_ranges + other.n_missing_in_ranges
         return nums
 
     def __radd__(self, other: int) -> Numbers:

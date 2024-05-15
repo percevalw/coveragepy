@@ -98,7 +98,7 @@ class Opts:
         help="Write the output files to DIR.",
     )
     fail_under = optparse.make_option(
-        "", "--fail-under", action="store", metavar="MIN", type="float",
+        "", "--fail-under", action="store", metavar="MIN",
         help="Exit with a status of 2 if the total coverage is less than MIN.",
     )
     format = optparse.make_option(
@@ -230,6 +230,14 @@ class Opts:
         "", "--version", action="store_true",
         help="Display version information and exit.",
     )
+    base_coverage_report = optparse.make_option(
+        "", "--base-coverage-report", action="store",
+        help="Use a previous coverage report as a comparison baseline.",
+    )
+    base_revision = optparse.make_option(
+        "", "--base-revision", action="store",
+        help="Use a previous coverage report as a comparison baseline.",
+    )
 
 
 class CoverageOptionParser(optparse.OptionParser):
@@ -276,6 +284,8 @@ class CoverageOptionParser(optparse.OptionParser):
             timid=None,
             title=None,
             version=None,
+            base_coverage_report=None,
+            base_revision=None,
         )
 
         self.disable_interspersed_args()
@@ -508,6 +518,8 @@ COMMANDS = {
             Opts.skip_covered,
             Opts.no_skip_covered,
             Opts.skip_empty,
+            Opts.base_coverage_report,
+            Opts.base_revision,
             ] + GLOBAL_ARGS,
         usage="[options] [modules]",
         description="Report coverage statistics on modules.",
@@ -671,6 +683,8 @@ class CoverageScript:
             check_preimported=True,
             context=options.context,
             messages=not options.quiet,
+            base_coverage_report=options.base_coverage_report,
+            base_revision=options.base_revision,
         )
 
         if options.action == "debug":
@@ -759,16 +773,30 @@ class CoverageScript:
             if options.precision is not None:
                 self.coverage.set_option("report:precision", options.precision)
 
-            fail_under = cast(float, self.coverage.get_option("report:fail_under"))
+            fail_under = self.coverage.get_option("report:fail_under")
+
+            if fail_under == "base":
+                fail_under = self.coverage._data._base_coverage
+                assert fail_under is not None, ("You set fail under to base but did not"
+                                                " provide a base coverage report")
+
+            fail_under = float(fail_under)
             precision = cast(int, self.coverage.get_option("report:precision"))
             if should_fail_under(total, fail_under, precision):
-                msg = "total of {total} is less than fail-under={fail_under:.{p}f}".format(
+                msg = "total of {total}% is less than {fail_under:.{p}f}% ❌".format(
                     total=Numbers(precision=precision).display_covered(total),
                     fail_under=fail_under,
                     p=precision,
                 )
                 print("Coverage failure:", msg)
                 return FAIL_UNDER
+            elif fail_under > 0:
+                msg = "total of {total}% is above {fail_under:.{p}f}% 🎉".format(
+                    total=Numbers(precision=precision).display_covered(total),
+                    fail_under=fail_under,
+                    p=precision,
+                )
+                print("Coverage success:", msg)
 
         return OK
 

@@ -258,6 +258,8 @@ class CoverageData(AutoReprMixin):
         self._current_context: Optional[str] = None
         self._current_context_id: Optional[int] = None
         self._query_context_ids: Optional[List[int]] = None
+        self._base_coverage_report = None
+        self._base_coverage = None
 
     def _choose_filename(self) -> None:
         """Set self._filename based on inited attributes."""
@@ -932,6 +934,34 @@ class CoverageData(AutoReprMixin):
                     self._query_context_ids = [row[0] for row in cur.fetchall()]
         else:
             self._query_context_ids = None
+
+    def load_base_report(
+        self,
+        base_coverage_report: Optional[FilePath] = None,
+    ):
+        if not base_coverage_report:
+            self._base_coverage_report = {}
+            return
+        with open(base_coverage_report) as f:
+            report_lines = f.read().splitlines(False)
+            total_line = report_lines[-1]
+            report_lines = report_lines[2:-2]
+        result = {}
+        for report_line in report_lines:
+            try:
+                filename, stmts, missing, cov, ranges = report_line.split(maxsplit=4)
+            except ValueError:
+                continue
+            result[filename] = []
+            for r in ranges.split(","):
+                if "-" in r:
+                    start, end = r.split("-")
+                    result[filename].extend(range(int(start) - 1, int(end)))
+                else:
+                    result[filename].append(int(r) - 1)
+
+        self._base_coverage_report = result
+        self._base_coverage = float(total_line.split()[-1].strip("%"))
 
     def lines(self, filename: str) -> Optional[List[TLineNo]]:
         """Get the list of lines executed for a source file.

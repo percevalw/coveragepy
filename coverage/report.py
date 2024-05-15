@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import sys
-
-from typing import Any, IO, Iterable, List, Optional, Tuple, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Any, Iterable, List, Optional, Tuple
 
 from coverage.exceptions import ConfigError, NoDataError
 from coverage.misc import human_sorted_items
@@ -20,6 +21,17 @@ if TYPE_CHECKING:
     from coverage import Coverage
 
 
+def format_range(r: dict[str, Any]) -> str:
+    """Return a nice string representation of a pair of numbers."""
+    if r["start"] == r["end"] - 1:
+        s = str(r["start"] + 1)
+    else:
+        s = f"{r['start'] + 1}-{r['end']}"
+    if "same_cov" in r and not r["same_cov"]:
+        s = f"**{s}**"
+    return s
+
+
 class SummaryReporter:
     """A reporter for writing the summary report."""
 
@@ -29,7 +41,7 @@ class SummaryReporter:
         self.branches = coverage.get_data().has_arcs()
         self.outfile: Optional[IO[str]] = None
         self.output_format = self.config.format or "text"
-        if self.output_format not in {"text", "markdown", "total"}:
+        if self.output_format not in {"text", "markdown", "total", "diff"}:
             raise ConfigError(f"Unknown report format choice: {self.output_format!r}")
         self.fr_analysis: List[Tuple[FileReporter, Analysis]] = []
         self.skipped_count = 0
@@ -50,6 +62,7 @@ class SummaryReporter:
         self,
         header: List[str],
         lines_values: List[List[Any]],
+        frs: List[FileReporter],
         total_line: List[Any],
         end_lines: List[str],
     ) -> None:
@@ -65,15 +78,16 @@ class SummaryReporter:
         max_name = max([len(line[0]) for line in lines_values] + [5]) + 1
         max_n = max(len(total_line[header.index("Cover")]) + 2, len(" Cover")) + 1
         max_n = max([max_n] + [len(line[header.index("Cover")]) + 2 for line in lines_values])
-        formats = dict(
-            Name="{:{name_len}}",
-            Stmts="{:>7}",
-            Miss="{:>7}",
-            Branch="{:>7}",
-            BrPart="{:>7}",
-            Cover="{:>{n}}",
-            Missing="{:>10}",
-        )
+        formats = {
+            "Name": "{:{name_len}}",
+            "Stmts": "{:>7}",
+            "Miss": "{:>7}",
+            "Branch": "{:>7}",
+            "BrPart": "{:>7}",
+            "Cover": "{:>{n}}",
+            "Missing": "{:>10}",
+            "∆&nbsp;Miss": "{:>11}",
+        }
         header_items = [
             formats[item].format(item, name_len=max_name, n=max_n)
             for item in header
@@ -89,8 +103,13 @@ class SummaryReporter:
         for values in lines_values:
             # build string with line values
             line_items = [
-                formats[item].format(str(value),
-                name_len=max_name, n=max_n-1) for item, value in zip(header, values)
+                formats[item].format(
+                    str(value)
+                    if item != "Missing"
+                    else ", ".join(format_range(r) for r in value),
+                    name_len=max_name, n=max_n - 1) for item, value in
+                zip(header, values)
+
             ]
             self.write_items(line_items)
 
@@ -111,6 +130,7 @@ class SummaryReporter:
         self,
         header: List[str],
         lines_values: List[List[Any]],
+        frs: List[FileReporter],
         total_line: List[Any],
         end_lines: List[str],
     ) -> None:
@@ -125,15 +145,16 @@ class SummaryReporter:
         # Prepare the formatting strings, header, and column sorting.
         max_name = max((len(line[0].replace("_", "\\_")) for line in lines_values), default=0)
         max_name = max(max_name, len("**TOTAL**")) + 1
-        formats = dict(
-            Name="| {:{name_len}}|",
-            Stmts="{:>9} |",
-            Miss="{:>9} |",
-            Branch="{:>9} |",
-            BrPart="{:>9} |",
-            Cover="{:>{n}} |",
-            Missing="{:>10} |",
-        )
+        formats = {
+            "Name": "| {:{name_len}}|",
+            "Stmts": "{:>9} |",
+            "Miss": "{:>9} |",
+            "Branch": "{:>9} |",
+            "BrPart": "{:>9} |",
+            "Cover": "{:>{n}} |",
+            "Missing": "{:>10} |",
+            "∆&nbsp;Miss": "{:>11} |",
+        }
         max_n = max(len(total_line[header.index("Cover")]) + 6, len(" Cover "))
         header_items = [formats[item].format(item, name_len=max_name, n=max_n) for item in header]
         header_str = "".join(header_items)
@@ -149,7 +170,11 @@ class SummaryReporter:
             # build string with line values
             formats.update(dict(Cover="{:>{n}}% |"))
             line_items = [
-                formats[item].format(str(value).replace("_", "\\_"), name_len=max_name, n=max_n-1)
+                formats[item].format(
+                    str(value).replace("_", "\\_"), name_len=max_name, n=max_n - 1
+                )
+                if item != "Missing"
+                else ", ".join(format_range(r) for r in value)
                 for item, value in zip(header, values)
             ]
             self.write_items(line_items)
@@ -169,7 +194,182 @@ class SummaryReporter:
         for end_line in end_lines:
             self.write(end_line)
 
-    def report(self, morfs: Optional[Iterable[TMorf]], outfile: Optional[IO[str]] = None) -> float:
+    def _report_diff(
+        self,
+        header: list[str],
+        lines_values: list[list[Any]],
+        frs: List[FileReporter],
+        total_line: Optional[list[Any]],
+        end_lines: list[str],
+        short: bool = False,
+    ) -> None:
+        """Internal method that prints report data in markdown format.
+
+        `header` is a list with captions.
+        `lines_values` is a sorted list of lists containing coverage information.
+        `total_line` is a list with values of the total line.
+        `end_lines` is a list of ending lines with information about skipped files.
+
+        """
+        header_items = [
+            f"<th align={'left' if item == 'Name' else 'right'}>{item}</th>"
+            for item in header
+            if item != "Missing"
+        ]
+        header_str = "<tr>{}</tr>".format("".join(header_items))
+
+        lines = []
+        collapsed_lines = []
+
+        for values, fr in zip(lines_values, frs):
+            fr: FileReporter
+            # build string with line values
+            fields = dict(zip(header, values))
+            filename = fields["Name"]
+            source = fr.source().splitlines()
+
+            collapse = fields.get("∆&nbsp;Miss", 0) <= 0
+            if "Missing" in fields:
+                collapse = all(m.get("same_cov") for m in fields["Missing"])
+
+                snippets = []
+                for m in fields["Missing"]:
+                    start = m["start"]
+                    end = m["end"]
+                    nice_range = f"{start}-{end}" if start != end - 1 else str(start)
+
+                    # Snippet header
+                    diff_id = hashlib.sha256(filename.encode()).hexdigest()
+                    many = 's' if '-' in nice_range else ''
+                    if "same_cov" not in m:
+                        loc = f"Missing coverage at line{many} {nice_range}"
+                    elif m["same_cov"]:
+                        loc = f"Was already missing at line{many} {nice_range}"
+                    else:
+                        loc = f"New missing coverage at line{many} {nice_range} !"
+                    if "GITHUB_PR_NUMBER" in os.environ and not m["same_code"]:
+                        link = os.environ.get(
+                            "GITHUB_PR_NUMBER", "."
+                        ) + "/files#diff-{}R{}-R{}".format(diff_id, start, end)
+                        loc = f'<a href="{link}">' + loc + "</a>"
+                    snippet = loc
+
+                    # Snippet body
+                    if not short:
+                        snippet_lines = []
+                        for i in range(
+                            max(0, start - 1),
+                            min(end + 1, len(source)),
+                        ):
+                            is_missing = start <= i < end
+                            snippet_line = ("- " if is_missing else " ") + source[i]
+                            if not snippet_line.strip():
+                                snippet_line = "<span/>"
+                            snippet_lines.append(snippet_line)
+
+                        snippet_body = "\n".join(snippet_lines)
+                        limit = 256 if collapse else 512 if m.get("same_cov") else 1024
+
+                        if len(snippet_body) > limit:
+                            snippet_body = "\n".join([
+                                s[:128] + "..." if len(s) > 128 else s
+                                for s in
+                                (
+                                    *snippet_lines[:limit // 128],
+                                    "  ...",
+                                    *snippet_lines[-limit // 128:],
+                                )
+                            ])
+
+                        snippet += f'<pre lang="diff">{snippet_body}</pre>'
+
+                    snippets.append(snippet)
+
+                if short:
+                    snippets = ["<li>" + s + "</li>" for s in snippets]
+                body = "".join(snippets)
+                fields["Name"] = (
+                    f"<details>"
+                    f"<summary>{fields['Name']}</summary>"
+                    f"<p>{body}</p>"
+                    f"</details>"
+                )
+
+            line_items = [
+                (
+                    f"<td align={'left' if key == 'Name' else 'right'}>"
+                    f"{value}"
+                    f"{'%' if key == 'Cover' else ''}"
+                    f"</td>"
+                )
+                for key, value in fields.items()
+                if key != "Missing"
+            ]
+            line = f"<tr>{''.join(line_items)}</tr>"
+
+            if not collapse:
+                lines.append(line)
+            else:
+                collapsed_lines.append(line)
+
+        # Write the TOTAL line
+        if total_line:
+            total_line_items: str = ""
+            values = dict(zip(header, total_line))
+            for item, value in values.items():
+                if item == "Missing":
+                    continue
+                if value == "":
+                    insert = value
+                elif item == "Cover":
+                    insert = f"<b>{value}%</b>"
+                else:
+                    insert = f"<b>{value}</b>"
+                side = "left" if item == "Name" else "right"
+                total_line_items += f"<td align={side}>{insert}</td>"
+            lines.append(f"<tr>{total_line_items}</tr>")
+        result = (
+            f"<table>"
+            f"<thead>{header_str}</thead>"
+            f"<tbody>{''.join(lines)}</tbody>"
+            f"</table>"
+        )
+
+        if collapsed_lines:
+            result += (
+                "\n\n<details><summary>"
+                "Files without new missing coverage"
+                "</summary>\n"
+                f"<table>"
+                f"<thead>{header_str}</thead>"
+                f"<tbody>{''.join(collapsed_lines)}</tbody>"
+                f"</table>"
+                "</details>"
+            )
+
+        if not short and len(result) > 65536 - 1024:
+            self._report_diff(
+                header,
+                lines_values,
+                frs,
+                total_line,
+                end_lines,
+                short=True)
+            self.write("\n\n*Snippets were omitted because the report was too large*")
+            return
+        else:
+            self.write(result)
+
+        if end_lines:
+            self.write("")
+        for end_line in end_lines:
+            self.write(end_line)
+
+        self.write("")
+
+    def report(
+        self, morfs: Optional[Iterable[TMorf]], outfile: Optional[IO[str]] = None
+    ) -> float:
         """Writes a report summarizing coverage statistics per module.
 
         `outfile` is a text-mode file object to write the summary to.
@@ -177,7 +377,9 @@ class SummaryReporter:
         """
         self.outfile = outfile or sys.stdout
 
-        self.coverage.get_data().set_query_contexts(self.config.report_contexts)
+        data = self.coverage.get_data()
+        data.set_query_contexts(self.config.report_contexts)
+        data.load_base_report(self.config.base_coverage_report)
         for fr, analysis in get_analysis_to_report(self.coverage, morfs):
             self.report_one_file(fr, analysis)
 
@@ -197,6 +399,8 @@ class SummaryReporter:
         header = ["Name", "Stmts", "Miss"]
         if self.branches:
             header += ["Branch", "BrPart"]
+        if self.config.base_coverage_report:
+            header += ["∆&nbsp;Miss"]
         header += ["Cover"]
         if self.config.show_missing:
             header += ["Missing"]
@@ -207,16 +411,20 @@ class SummaryReporter:
 
         # `lines_values` is list of lists of sortable values.
         lines_values = []
+        frs = []
 
         for (fr, analysis) in self.fr_analysis:
+            frs.append(fr)
             nums = analysis.numbers
 
             args = [fr.relative_filename(), nums.n_statements, nums.n_missing]
             if self.branches:
                 args += [nums.n_branches, nums.n_partial_branches]
+            if self.config.base_coverage_report:
+                args += [nums.n_diff_missing]
             args += [nums.pc_covered_str]
             if self.config.show_missing:
-                args += [analysis.missing_formatted(branches=True)]
+                args += [analysis.missing_ranges()]
             args += [nums.pc_covered]
             lines_values.append(args)
 
@@ -243,6 +451,8 @@ class SummaryReporter:
         total_line = ["TOTAL", self.total.n_statements, self.total.n_missing]
         if self.branches:
             total_line += [self.total.n_branches, self.total.n_partial_branches]
+        if self.config.base_coverage_report:
+            total_line += [self.total.n_diff_missing]
         total_line += [self.total.pc_covered_str]
         if self.config.show_missing:
             total_line += [""]
@@ -260,9 +470,11 @@ class SummaryReporter:
 
         if self.output_format == "markdown":
             formatter = self._report_markdown
+        elif self.output_format == "diff":
+            formatter = self._report_diff
         else:
             formatter = self._report_text
-        formatter(header, lines_values, total_line, end_lines)
+        formatter(header, lines_values, frs, total_line, end_lines)
 
     def report_one_file(self, fr: FileReporter, analysis: Analysis) -> None:
         """Report on just one file, the callback from report()."""

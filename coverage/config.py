@@ -257,6 +257,10 @@ class CoverageConfig(TConfigurable, TPluginConfig):
         # Options for plugins
         self.plugin_options: Dict[str, TConfigSectionOut] = {}
 
+        # Diff related options
+        self.base_coverage_report: Optional[str] = None
+        self.base_revision: Optional[str] = None
+
     MUST_BE_LIST = {
         "debug", "concurrency", "plugins",
         "report_omit", "report_include",
@@ -394,7 +398,7 @@ class CoverageConfig(TConfigurable, TPluginConfig):
         # [report]
         ("exclude_list", "report:exclude_lines", "regexlist"),
         ("exclude_also", "report:exclude_also", "regexlist"),
-        ("fail_under", "report:fail_under", "float"),
+        ("fail_under", "report:fail_under"),
         ("format", "report:format", "boolean"),
         ("ignore_errors", "report:ignore_errors", "boolean"),
         ("include_namespace_packages", "report:include_namespace_packages", "boolean"),
@@ -408,6 +412,8 @@ class CoverageConfig(TConfigurable, TPluginConfig):
         ("skip_covered", "report:skip_covered", "boolean"),
         ("skip_empty", "report:skip_empty", "boolean"),
         ("sort", "report:sort"),
+        ("base_coverage_report", "report:base_coverage_report"),
+        ("base_revision", "report:base_revision"),
 
         # [html]
         ("extra_css", "html:extra_css"),
