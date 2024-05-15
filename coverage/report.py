@@ -405,9 +405,17 @@ class SummaryReporter:
         if self.config.show_missing:
             header += ["Missing"]
 
-        column_order = dict(name=0, stmts=1, miss=2, cover=-1)
-        if self.branches:
-            column_order.update(dict(branch=3, brpart=4))
+        column_order = {
+            "name": header.index("Name") if "Name" in header else None,
+            "stmts": header.index("Stmts") if "Stmts" in header else None,
+            "miss": header.index("Miss") if "Miss" in header else None,
+            "cover": header.index("Cover") if "Cover" in header else None,
+            "diff": header.index("∆&nbsp;Miss") if "∆&nbsp;Miss" in header else None,
+            "branch": header.index("Branch") if "Branch" in header else None,
+            "brpart": header.index("BrPart") if "BrPart" in header else None,
+        }
+        # filter if exist
+        column_order = {k: v for k, v in column_order.items() if v is not None}
 
         # `lines_values` is list of lists of sortable values.
         lines_values = []
