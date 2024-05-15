@@ -5,15 +5,18 @@ from typing import Dict, List, Tuple
 
 
 def parse_range_info(range_info):
+    if range_info[0] in ("+", "-"):
+        range_info = range_info[1:]
     if "0,0" == range_info:
-        size, start = 1, 1
+        start, size = 1, 1
     elif "," in range_info:
-        size, start = map(int, range_info.split(","))
-        size = abs(size)
+        start, size = map(int, range_info.split(","))
+        if size > 0:
+            start -= 1
     else:
         size = 1
-        start = int(range_info)
-    return start - 1, size
+        start = int(range_info) - 1
+    return start, size
 
 
 @functools.lru_cache(maxsize=None)
@@ -53,27 +56,21 @@ def unchanged_blocks(base_branch) -> Dict[str, List[Tuple[int, int, int]]]:
                     )
                 base_offset = base_start + base_size
                 curr_offset = curr_start + curr_size
-
-        base_file_content = []
-        curr_file_content = []
-        try:
-            base_file_content = (
-                subprocess.check_output(
-                    ["git", "show", f"{base_branch}:{curr_file}"],
-                    stderr=subprocess.DEVNULL,
+            size = 0
+            if curr_file:
+                try:
+                    curr_file_content = pathlib.Path(curr_file).read_text().splitlines()
+                    size = len(curr_file_content) - curr_offset
+                except FileNotFoundError:
+                    pass
+            blocks.append(
+                (
+                    base_offset,
+                    curr_offset,
+                    size,
                 )
-                .decode("utf-8")
-                .splitlines()
             )
-        except subprocess.CalledProcessError:
-            pass
-        if curr_file:
-            try:
-                curr_file_content = pathlib.Path(curr_file).read_text().splitlines()
-            except FileNotFoundError:
-                pass
-        blocks.append((len(base_file_content), len(curr_file_content), 0))
-        file_blocks[curr_file] = zip(*blocks) if blocks else ([], [], [])
+        file_blocks[curr_file] = tuple(zip(*blocks) if blocks else ([], [], []))
 
     for line in diff_output.splitlines():
         if line.startswith("diff --git"):

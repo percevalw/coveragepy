@@ -10,6 +10,7 @@ import os
 import sys
 from typing import IO, TYPE_CHECKING, Any, Iterable, List, Optional, Tuple
 
+from coverage.diff import unchanged_blocks
 from coverage.exceptions import ConfigError, NoDataError
 from coverage.misc import human_sorted_items
 from coverage.plugin import FileReporter
@@ -62,7 +63,6 @@ class SummaryReporter:
         self,
         header: List[str],
         lines_values: List[List[Any]],
-        frs: List[FileReporter],
         total_line: List[Any],
         end_lines: List[str],
     ) -> None:
@@ -86,7 +86,7 @@ class SummaryReporter:
             "BrPart": "{:>7}",
             "Cover": "{:>{n}}",
             "Missing": "{:>10}",
-            "∆&nbsp;Miss": "{:>11}",
+            "∆ Miss": "{:>11}",
         }
         header_items = [
             formats[item].format(item, name_len=max_name, n=max_n)
@@ -130,7 +130,6 @@ class SummaryReporter:
         self,
         header: List[str],
         lines_values: List[List[Any]],
-        frs: List[FileReporter],
         total_line: List[Any],
         end_lines: List[str],
     ) -> None:
@@ -153,10 +152,15 @@ class SummaryReporter:
             "BrPart": "{:>9} |",
             "Cover": "{:>{n}} |",
             "Missing": "{:>10} |",
-            "∆&nbsp;Miss": "{:>11} |",
+            "∆ Miss": "{:>11} |",
         }
         max_n = max(len(total_line[header.index("Cover")]) + 6, len(" Cover "))
-        header_items = [formats[item].format(item, name_len=max_name, n=max_n) for item in header]
+        header_items = [
+            formats[item].format(
+                item.replace(" ", "&nbsp;"),
+                name_len=max_name, n=max_n
+            ) for item in header
+        ]
         header_str = "".join(header_items)
         rule_str = "|" + " ".join(["- |".rjust(len(header_items[0])-1, "-")] +
             ["-: |".rjust(len(item)-1, "-") for item in header_items[1:]]
@@ -198,7 +202,6 @@ class SummaryReporter:
         self,
         header: list[str],
         lines_values: list[list[Any]],
-        frs: List[FileReporter],
         total_line: Optional[list[Any]],
         end_lines: list[str],
         short: bool = False,
@@ -212,7 +215,8 @@ class SummaryReporter:
 
         """
         header_items = [
-            f"<th align={'left' if item == 'Name' else 'right'}>{item}</th>"
+            (f"<th align={'left' if item == 'Name' else 'right'}>"
+             f"{item.replace(' ', '&nbsp;')}</th>")
             for item in header
             if item != "Missing"
         ]
@@ -221,16 +225,17 @@ class SummaryReporter:
         lines = []
         collapsed_lines = []
 
-        for values, fr in zip(lines_values, frs):
-            fr: FileReporter
+        for values in lines_values:
+            fr: FileReporter = values[-1]
             # build string with line values
             fields = dict(zip(header, values))
             filename = fields["Name"]
             source = fr.source().splitlines()
 
-            collapse = fields.get("∆&nbsp;Miss", 0) <= 0
+            collapse = fields.get("∆ Miss", 0) <= 0
             if "Missing" in fields:
                 collapse = all(m.get("same_cov") for m in fields["Missing"])
+                changed_file = filename in unchanged_blocks(self.config.base_revision)
 
                 snippets = []
                 for m in fields["Missing"]:
@@ -247,7 +252,7 @@ class SummaryReporter:
                         loc = f"Was already missing at line{many} {nice_range}"
                     else:
                         loc = f"New missing coverage at line{many} {nice_range} !"
-                    if "GITHUB_PR_NUMBER" in os.environ and not m["same_code"]:
+                    if "GITHUB_PR_NUMBER" in os.environ and changed_file:
                         link = os.environ.get(
                             "GITHUB_PR_NUMBER", "."
                         ) + "/files#diff-{}R{}-R{}".format(diff_id, start, end)
@@ -351,7 +356,6 @@ class SummaryReporter:
             self._report_diff(
                 header,
                 lines_values,
-                frs,
                 total_line,
                 end_lines,
                 short=True)
@@ -400,7 +404,7 @@ class SummaryReporter:
         if self.branches:
             header += ["Branch", "BrPart"]
         if self.config.base_coverage_report:
-            header += ["∆&nbsp;Miss"]
+            header += ["∆ Miss"]
         header += ["Cover"]
         if self.config.show_missing:
             header += ["Missing"]
@@ -410,7 +414,7 @@ class SummaryReporter:
             "stmts": header.index("Stmts") if "Stmts" in header else None,
             "miss": header.index("Miss") if "Miss" in header else None,
             "cover": header.index("Cover") if "Cover" in header else None,
-            "diff": header.index("∆&nbsp;Miss") if "∆&nbsp;Miss" in header else None,
+            "diff": header.index("∆ Miss") if "∆ Miss" in header else None,
             "branch": header.index("Branch") if "Branch" in header else None,
             "brpart": header.index("BrPart") if "BrPart" in header else None,
         }
@@ -419,10 +423,8 @@ class SummaryReporter:
 
         # `lines_values` is list of lists of sortable values.
         lines_values = []
-        frs = []
 
         for (fr, analysis) in self.fr_analysis:
-            frs.append(fr)
             nums = analysis.numbers
 
             args = [fr.relative_filename(), nums.n_statements, nums.n_missing]
@@ -434,6 +436,7 @@ class SummaryReporter:
             if self.config.show_missing:
                 args += [analysis.missing_ranges()]
             args += [nums.pc_covered]
+            args.append(fr)
             lines_values.append(args)
 
         # Line sorting.
@@ -482,7 +485,7 @@ class SummaryReporter:
             formatter = self._report_diff
         else:
             formatter = self._report_text
-        formatter(header, lines_values, frs, total_line, end_lines)
+        formatter(header, lines_values, total_line, end_lines)
 
     def report_one_file(self, fr: FileReporter, analysis: Analysis) -> None:
         """Report on just one file, the callback from report()."""

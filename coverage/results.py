@@ -107,10 +107,10 @@ class Analysis:
             # Compute which lines in the branch file were changed
             unchanged = unchanged_blocks(self.base_revision).get(filename)
             if unchanged is not None:
-                unchanged_base_lines, unchanged_branch_lines, sizes = unchanged
+                unchanged_base_lines, unchanged_curr_lines, sizes = unchanged
                 unchanged_lines = {
                     start + i
-                    for start, size in zip(unchanged_branch_lines, sizes)
+                    for start, size in zip(unchanged_curr_lines, sizes)
                     for i in range(size)
                 }
 
@@ -135,10 +135,10 @@ class Analysis:
                             idx -= 1
 
                         unchanged_base_start = unchanged_base_lines[idx]
-                        branch_line = unchanged_base_lines[idx] + (line - unchanged_base_start)
+                        curr_line = unchanged_curr_lines[idx] + (line - unchanged_base_start)
                         # If the line that was missing in base is in an unchanged block
                         if unchanged_base_start <= line < unchanged_base_start + sizes[idx]:
-                            was_already_missing.add(branch_line)
+                            was_already_missing.add(curr_line)
 
                 for m in missing:
                     m["same_cov"] = set(range(m["start"], m["end"])) <= was_already_missing
