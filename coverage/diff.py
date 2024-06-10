@@ -61,7 +61,7 @@ def unchanged_blocks(base_branch) -> Dict[str, List[Tuple[int, int, int]]]:
                 try:
                     curr_file_content = pathlib.Path(curr_file).read_text().splitlines()
                     size = len(curr_file_content) - curr_offset
-                except FileNotFoundError:
+                except FileNotFoundError, UnicodeDecodeError:
                     pass
             blocks.append(
                 (
